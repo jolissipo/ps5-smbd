@@ -1,0 +1,78 @@
+name: Build ps5-smbd (SMB signing fix PR 1)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build PS5 ELF from upstream PR 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
+
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the upstream SMB signing fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 https://github.com/Marice/ps5-smbd.git refs/pull/1/head
+          # Pin the reviewed PR to the exact two-commit version (31 Oct 2026).
+          expected=e25b19efbe1b3c7501b1f61f43bd47a6ebf97ac6
+          actual="$(git rev-parse FETCH_HEAD)"
+          echo "Upstream PR #1: ${actual}"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::PR #1 changed since this workflow was prepared. Review it before building."
+            exit 1
+          fi
+          git checkout --detach --force FETCH_HEAD
+          git log -2 --oneline
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bash build-essential clang-18 lld-18 cmake git curl unzip \
+            patch pkg-config python3 ca-certificates
+
+      - name: Install official PS5 Payload SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output /tmp/ps5-payload-sdk.zip \
+            https://github.com/ps5-payload-dev/sdk/releases/download/v0.45/ps5-payload-sdk.zip
+          sudo unzip -q /tmp/ps5-payload-sdk.zip -d /opt
+          test -x "$PS5_PAYLOAD_SDK/bin/prospero-cmake"
+          test -f "$PS5_PAYLOAD_SDK/toolchain/prospero.mk"
+
+      - name: Compile ps5-smbd.elf
+        shell: bash
+        run: |
+          set -euo pipefail
+          make
+          test -s ps5-smbd.elf
+          file ps5-smbd.elf
+          readelf -h ps5-smbd.elf
+          mkdir -p dist
+          cp ps5-smbd.elf dist/ps5-smbd-pr1.elf
+          sha256sum dist/ps5-smbd-pr1.elf > dist/ps5-smbd-pr1.elf.sha256
+          git rev-parse HEAD > dist/source-commit.txt
+
+      - name: Publish test ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps5-smbd-pr1-test-build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
